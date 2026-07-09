@@ -409,7 +409,19 @@ function EditorInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, action, html }),
       });
-      const data = await res.json();
+      // Parse defensively: a server-side timeout or a dropped connection can
+      // return an empty/truncated body, which throws a cryptic "Unexpected
+      // end of JSON input" out of res.json() — give that a clear message
+      // instead, since the raw parse error tells the user nothing actionable.
+      const rawBody = await res.text();
+      let data;
+      try {
+        data = rawBody ? JSON.parse(rawBody) : {};
+      } catch {
+        throw new Error(
+          "The server didn't finish responding — this usually means the request timed out. Please try again."
+        );
+      }
       if (!res.ok) throw new Error(data.error || "Action failed.");
 
       if (action === "save") setDirty(false);
