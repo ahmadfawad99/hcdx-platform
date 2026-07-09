@@ -8,15 +8,16 @@
     "start": "next start"
   },
   "dependencies": {
-    "next": "16.2.10",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "cheerio": "^1.0.0",
     "@sparticuz/chromium": "^127.0.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "cheerio": "^1.0.0",
+    "next": "16.2.10",
     "puppeteer-core": "^22.15.0",
-    "@supabase/supabase-js": "^2.45.0"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@netlify/plugin-nextjs": "^5.7.3"
+    "@netlify/plugin-nextjs": "^5.7.3",
+    "netlify-cli": "^26.2.0"
   }
 }
