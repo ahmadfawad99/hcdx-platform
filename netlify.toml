@@ -1,0 +1,13 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Headless capture needs more time/memory than the Netlify Functions default,
+# and @sparticuz/chromium's binary is large — give the capture function room.
+[functions."___netlify-server-handler"]
+  included_files = ["node_modules/@sparticuz/chromium/**"]
+  memory = 3008
+  timeout = 30

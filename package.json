@@ -1,0 +1,22 @@
+{
+  "name": "hcdx-platform",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "16.2.10",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "cheerio": "^1.0.0",
+    "@sparticuz/chromium": "^127.0.0",
+    "puppeteer-core": "^22.15.0",
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "@netlify/plugin-nextjs": "^5.7.3"
+  }
+}

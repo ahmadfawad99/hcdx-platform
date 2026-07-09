@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.claude/settings.local.json
+data/projects/*.json
+data/captures/*
+!data/projects/.gitkeep
+!data/captures/.gitkeep
+.env
+.env*.local
+!.env.example
+npm-debug.log*
