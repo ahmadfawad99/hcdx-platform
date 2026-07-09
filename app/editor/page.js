@@ -248,6 +248,11 @@ const EDITOR_RUNTIME = `
   } else {
     markEditable();
   }
+
+  // Tell the parent this iframe's editor runtime is live and can answer
+  // hcdx-request-html — Save/Reset/Publish stay disabled until this fires,
+  // so a click can never race an iframe that isn't listening yet.
+  parent.postMessage({ type: "hcdx-runtime-ready" }, "*");
 })();
 `;
 
@@ -261,12 +266,14 @@ function EditorInner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [toast, setToast] = useState(null);
+  const [actionModal, setActionModal] = useState(null); // { status: 'loading'|'success'|'error', action, message }
   const [busy, setBusy] = useState(false);
+  const [iframeReady, setIframeReady] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
   const [themeLoading, setThemeLoading] = useState(false);
   const [themeVars, setThemeVars] = useState([]);
   const latestHtmlRef = useRef(null);
+  const loadedProjectIdRef = useRef(null);
 
   useEffect(() => {
     if (!id) {
@@ -304,6 +311,9 @@ function EditorInner() {
         pendingThemeResolve.current(e.data.vars);
         pendingThemeResolve.current = null;
       }
+      if (e.data.type === "hcdx-runtime-ready") {
+        setIframeReady(true);
+      }
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -311,12 +321,18 @@ function EditorInner() {
 
   const pendingResolve = useRef(null);
   function requestHtmlFromIframe() {
-    return new Promise((resolve) => {
+    const request = new Promise((resolve) => {
       // Prefer the last change we were told about; otherwise ask the iframe.
       if (latestHtmlRef.current) return resolve(latestHtmlRef.current);
       pendingResolve.current = resolve;
       iframeRef.current?.contentWindow?.postMessage({ type: "hcdx-request-html" }, "*");
     });
+    // Belt-and-suspenders: the iframe should always answer once iframeReady
+    // is true, but never let a missed message hang the loading modal forever.
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("The editor didn't respond in time. Please try again.")), 15000)
+    );
+    return Promise.race([request, timeout]);
   }
 
   const pendingThemeResolve = useRef(null);
@@ -340,14 +356,18 @@ function EditorInner() {
     iframeRef.current?.contentWindow?.postMessage({ type: "hcdx-set-theme-var", name, value }, "*");
   }
 
-  // Inject the captured HTML + runtime into the iframe once loaded.
-  function handleIframeLoad() {
+  // Inject the captured HTML + runtime into the iframe. A src-less <iframe>'s
+  // onLoad firing is inconsistent across browsers/timing, so this is driven
+  // by an effect keyed on project.id (below) rather than solely by onLoad —
+  // onLoad still calls this too, but the ref guard makes repeat calls a no-op.
+  function writeProjectIntoIframe(proj) {
     const iframe = iframeRef.current;
-    if (!iframe || !project) return;
+    if (!iframe || !proj) return;
     const doc = iframe.contentDocument;
     if (!doc) return;
+    setIframeReady(false);
     doc.open();
-    doc.write(stripEmbeddedScripts(project.draftHtml));
+    doc.write(stripEmbeddedScripts(proj.draftHtml));
     doc.close();
     // Inject runtime after the doc is written. Marked with an id so
     // currentHtml() can strip it before anything gets saved/published —
@@ -358,13 +378,29 @@ function EditorInner() {
     doc.body.appendChild(script);
   }
 
-  function showToast(msg) {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2800);
+  useEffect(() => {
+    if (project && loadedProjectIdRef.current !== project.id) {
+      loadedProjectIdRef.current = project.id;
+      writeProjectIntoIframe(project);
+    }
+  }, [project]);
+
+  function handleIframeLoad() {
+    if (project && loadedProjectIdRef.current !== project.id) {
+      loadedProjectIdRef.current = project.id;
+      writeProjectIntoIframe(project);
+    }
   }
+
+  const ACTION_COPY = {
+    save: { loading: "Saving your draft…", success: "Draft saved." },
+    reset: { loading: "Resetting to the captured version…", success: "Reset to the captured version." },
+    publish: { loading: "Publishing your page…", success: "Published! Your page is live." },
+  };
 
   async function doAction(action) {
     setBusy(true);
+    setActionModal({ status: "loading", action, message: ACTION_COPY[action].loading });
     try {
       let html = null;
       if (action !== "reset") html = await requestHtmlFromIframe();
@@ -376,28 +412,35 @@ function EditorInner() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Action failed.");
 
-      if (action === "save") { setDirty(false); showToast("Draft saved."); }
+      if (action === "save") setDirty(false);
       if (action === "reset") {
         latestHtmlRef.current = null;
         setDirty(false);
-        showToast("Reset to captured version.");
         // Reload project + iframe.
         const p = await (await fetch(`/api/projects?id=${id}`)).json();
         setProject(p);
         // Force iframe rewrite.
         const iframe = iframeRef.current;
         if (iframe) {
+          setIframeReady(false);
           const d = iframe.contentDocument;
           d.open(); d.write(stripEmbeddedScripts(p.draftHtml)); d.close();
           const s = d.createElement("script"); s.id = "hcdx-editor-runtime"; s.textContent = EDITOR_RUNTIME; d.body.appendChild(s);
         }
       }
-      if (action === "publish") {
-        setDirty(false);
-        showToast("Published. Live now.");
+      if (action === "publish") setDirty(false);
+
+      setActionModal({ status: "success", action, message: ACTION_COPY[action].success });
+      // Save/reset are low-stakes — auto-dismiss so repeat clicks don't pile up
+      // confirmation dialogs. Publish has real follow-up actions (view live,
+      // go to dashboard), so it waits for the user to close it explicitly.
+      if (action !== "publish") {
+        setTimeout(() => {
+          setActionModal((m) => (m && m.action === action && m.status === "success" ? null : m));
+        }, 1800);
       }
     } catch (err) {
-      showToast(err.message);
+      setActionModal({ status: "error", action, message: err.message || "Something went wrong." });
     } finally {
       setBusy(false);
     }
@@ -419,11 +462,14 @@ function EditorInner() {
             </span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-          <button onClick={openThemePanel} disabled={busy} style={btn("secondary")}>🎨 Theme colors</button>
-          <button onClick={() => doAction("reset")} disabled={busy} style={btn("secondary")}>Reset</button>
-          <button onClick={() => doAction("save")} disabled={busy} style={btn("dark")}>Save draft</button>
-          <button onClick={() => doAction("publish")} disabled={busy} style={btn("primary")}>Publish</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          {!iframeReady && (
+            <span style={{ fontSize: 12.5, color: "#92400E", fontStyle: "italic" }}>Preparing editor…</span>
+          )}
+          <button onClick={openThemePanel} disabled={busy || !iframeReady} style={btn("secondary", busy || !iframeReady)}>🎨 Theme colors</button>
+          <button onClick={() => doAction("reset")} disabled={busy || !iframeReady} style={btn("secondary", busy || !iframeReady)}>Reset</button>
+          <button onClick={() => doAction("save")} disabled={busy || !iframeReady} style={btn("dark", busy || !iframeReady)}>Save draft</button>
+          <button onClick={() => doAction("publish")} disabled={busy || !iframeReady} style={btn("primary", busy || !iframeReady)}>Publish</button>
         </div>
       </div>
 
@@ -463,9 +509,49 @@ function EditorInner() {
         </div>
       )}
 
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, right: 24, background: C.navy, color: C.white, padding: "12px 18px", borderRadius: 8, fontSize: 13.5, fontWeight: 500, boxShadow: "0 10px 30px rgba(0,0,0,0.25)", zIndex: 200 }}>
-          {toast}
+      {actionModal && (
+        <div
+          onClick={() => { if (actionModal.status !== "loading") setActionModal(null); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(14,42,71,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 400 }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, padding: "32px 28px", width: "100%", maxWidth: 360, boxShadow: "0 24px 60px rgba(0,0,0,0.3)", textAlign: "center", fontFamily: FONT }}>
+            {actionModal.status === "loading" && (
+              <>
+                <SpinnerLarge />
+                <div style={{ marginTop: 18, fontSize: 15, fontWeight: 600, color: C.navy }}>{actionModal.message}</div>
+                <div style={{ marginTop: 6, fontSize: 13, color: C.textMuted }}>This can take a moment for larger pages.</div>
+              </>
+            )}
+            {actionModal.status === "success" && (
+              <>
+                <SuccessIcon />
+                <div style={{ marginTop: 14, fontSize: 15.5, fontWeight: 700, color: C.navy }}>{actionModal.message}</div>
+                <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {actionModal.action === "publish" && (
+                    <>
+                      <a href={`/published/${id}`} target="_blank" rel="noreferrer" style={{ ...btn("primary"), textDecoration: "none" }}>
+                        View live ↗
+                      </a>
+                      <button onClick={() => router.push("/")} style={btn("secondary")}>Go to dashboard</button>
+                    </>
+                  )}
+                  <button onClick={() => setActionModal(null)} style={btn(actionModal.action === "publish" ? "secondary" : "dark")}>
+                    Keep editing
+                  </button>
+                </div>
+              </>
+            )}
+            {actionModal.status === "error" && (
+              <>
+                <ErrorIcon />
+                <div style={{ marginTop: 14, fontSize: 15, fontWeight: 700, color: C.danger }}>Something went wrong</div>
+                <div style={{ marginTop: 6, fontSize: 13.5, color: C.textMuted }}>{actionModal.message}</div>
+                <div style={{ marginTop: 20 }}>
+                  <button onClick={() => setActionModal(null)} style={btn("dark")}>Dismiss</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -483,14 +569,43 @@ export default function EditorPage() {
 /* ---------- helpers ---------- */
 const backBtn = { background: "transparent", border: "1px solid rgba(0,0,0,0.15)", borderRadius: 6, padding: "6px 12px", fontSize: 13, fontWeight: 600, color: "#5C4A1E", cursor: "pointer" };
 
-function btn(variant) {
-  const base = { border: "1px solid transparent", borderRadius: 6, padding: "7px 15px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
+function btn(variant, disabled) {
+  const base = { border: "1px solid transparent", borderRadius: 6, padding: "7px 15px", fontSize: 13, fontWeight: 600, cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1 };
   const variants = {
     primary: { background: "#1B7A43", color: "#fff" },
     dark: { background: "#0E2A47", color: "#fff" },
     secondary: { background: "transparent", color: "#0E2A47", border: "1px solid #0E2A47" },
   };
   return { ...base, ...variants[variant] };
+}
+
+function SpinnerLarge() {
+  return (
+    <div style={{ width: 40, height: 40, margin: "0 auto", border: "4px solid #E3E8ED", borderTopColor: "#1B7A43", borderRadius: "50%", animation: "hcdxEditorSpin 0.8s linear infinite" }}>
+      <style>{`@keyframes hcdxEditorSpin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+function SuccessIcon() {
+  return (
+    <div style={{ width: 48, height: 48, margin: "0 auto", borderRadius: "50%", background: "#E6F1E9", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+        <path d="M5 12.5L9.5 17L19 7" stroke="#1B7A43" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </div>
+  );
+}
+
+function ErrorIcon() {
+  return (
+    <div style={{ width: 48, height: 48, margin: "0 auto", borderRadius: "50%", background: "#FEECEC", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+        <path d="M12 7V13" stroke="#B91C1C" strokeWidth="2.5" strokeLinecap="round" />
+        <circle cx="12" cy="16.5" r="1.2" fill="#B91C1C" />
+      </svg>
+    </div>
+  );
 }
 
 function CenterMsg({ text, isError, onBack }) {

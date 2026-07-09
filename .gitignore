@@ -1,6 +1,7 @@
 node_modules/
 .next/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 data/projects/*.json
 data/captures/*
 !data/projects/.gitkeep
@@ -9,3 +10,6 @@ data/captures/*
 .env*.local
 !.env.example
 npm-debug.log*
+
+# Local Netlify folder
+.netlify
