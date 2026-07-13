@@ -33,6 +33,8 @@ export default function Dashboard() {
   const [captureError, setCaptureError] = useState("");
   const [projects, setProjects] = useState([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null); // project pending deletion
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (authed) loadProjects();
@@ -48,6 +50,21 @@ export default function Dashboard() {
       /* leave list empty on error */
     } finally {
       setLoadingProjects(false);
+    }
+  }
+
+  async function doDelete() {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/projects?id=${confirmDelete.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("delete failed");
+      setProjects((prev) => prev.filter((p) => p.id !== confirmDelete.id));
+      setConfirmDelete(null);
+    } catch {
+      /* keep dialog open on failure */
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -126,9 +143,25 @@ export default function Dashboard() {
       </div>
 
       <div style={{ maxWidth: 880, margin: "0 auto", padding: "40px 24px" }}>
-        {/* Capture card */}
+        {/* New React project card (primary flow) */}
+        <div style={{ background: C.navy, borderRadius: 14, padding: "28px 28px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 20, flexWrap: "wrap" }}>
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ fontSize: 21, fontWeight: 700, color: C.white, margin: "0 0 6px" }}>New project</h1>
+            <p style={{ fontSize: 14, color: "rgba(255,255,255,0.8)", margin: 0 }}>
+              Paste an HTML prototype, convert it to a real React page, and edit it inline.
+            </p>
+          </div>
+          <button
+            onClick={() => router.push("/convert")}
+            style={{ background: C.green, color: C.white, border: "none", borderRadius: 8, padding: "12px 22px", fontWeight: 600, fontSize: 14.5, cursor: "pointer", whiteSpace: "nowrap" }}
+          >
+            ＋ Create project
+          </button>
+        </div>
+
+        {/* Capture card (secondary) */}
         <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: "30px 28px", marginBottom: 34 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: C.navy, margin: "0 0 6px" }}>Capture a page</h1>
+          <h1 style={{ fontSize: 18, fontWeight: 700, color: C.navy, margin: "0 0 6px" }}>Or capture a live URL</h1>
           <p style={{ fontSize: 14, color: C.textMuted, margin: "0 0 20px" }}>
             Paste the URL of any live page. We&apos;ll capture it, store a copy, and open it ready to edit.
           </p>
@@ -184,12 +217,12 @@ export default function Dashboard() {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 14.5, color: C.navy, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.sourceUrl}</div>
                   <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 3 }}>
-                    {p.editableCount} editable elements · captured {new Date(p.capturedAt).toLocaleDateString()}
+                    {p.captureMode === "react" ? "React project" : "Captured page"} · {p.editableCount} editable elements · {new Date(p.capturedAt).toLocaleDateString()}
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
                   <StatusPill status={p.status} />
-                  <a href={`/editor?id=${p.id}`} style={{ background: C.navy, color: C.white, textDecoration: "none", borderRadius: 7, padding: "8px 16px", fontWeight: 600, fontSize: 13 }}>
+                  <a href={p.captureMode === "react" ? `/convert?id=${p.id}` : `/editor?id=${p.id}`} style={{ background: C.navy, color: C.white, textDecoration: "none", borderRadius: 7, padding: "8px 16px", fontWeight: 600, fontSize: 13 }}>
                     Edit
                   </a>
                   {p.status === "published" && (
@@ -197,12 +230,31 @@ export default function Dashboard() {
                       View live ↗
                     </a>
                   )}
+                  <button onClick={() => setConfirmDelete(p)} title="Delete project"
+                    style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.danger, borderRadius: 7, padding: "8px 12px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+                    Delete
+                  </button>
                 </div>
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {confirmDelete && (
+        <div onClick={() => !deleting && setConfirmDelete(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(14,42,71,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 500, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, padding: "26px 26px", width: "100%", maxWidth: 380, boxShadow: "0 24px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ fontWeight: 700, fontSize: 17, color: C.navy, marginBottom: 6 }}>Delete this project?</div>
+            <p style={{ fontSize: 13.5, color: C.textMuted, margin: "0 0 6px", wordBreak: "break-all" }}>{confirmDelete.sourceUrl}</p>
+            <p style={{ fontSize: 13, color: C.danger, margin: "0 0 20px" }}>This can&apos;t be undone.</p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setConfirmDelete(null)} disabled={deleting} style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.textDark, borderRadius: 8, padding: "9px 16px", fontWeight: 600, fontSize: 13.5, cursor: "pointer" }}>Cancel</button>
+              <button onClick={doDelete} disabled={deleting} style={{ background: C.danger, color: C.white, border: "none", borderRadius: 8, padding: "9px 16px", fontWeight: 600, fontSize: 13.5, cursor: "pointer" }}>{deleting ? "Deleting…" : "Delete"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

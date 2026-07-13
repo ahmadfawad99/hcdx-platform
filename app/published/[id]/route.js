@@ -32,6 +32,9 @@ export async function GET(_request, { params }) {
   const clean = project.publishedHtml
     .replace(/\sdata-edit-id="[^"]*"/g, "")
     .replace(/\sdata-edit-type="[^"]*"/g, "")
+    .replace(/\sdata-edit-list="[^"]*"/g, "")
+    .replace(/\sdata-edit-item="[^"]*"/g, "")
+    .replace(/<!--HCDX_JSX_B64:[A-Za-z0-9+/=]+-->/g, "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
 
   return new Response(clean, {
