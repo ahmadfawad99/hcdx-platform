@@ -26,7 +26,7 @@ export async function POST(request) {
   }
 
   try {
-    const result = htmlToReact(html, {
+    const result = await htmlToReact(html, {
       componentName: body.componentName || "CapturedPage",
       baseUrl: body.baseUrl || null,
     });

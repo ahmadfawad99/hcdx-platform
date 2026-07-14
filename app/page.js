@@ -36,6 +36,16 @@ export default function Dashboard() {
   const [confirmDelete, setConfirmDelete] = useState(null); // project pending deletion
   const [deleting, setDeleting] = useState(false);
 
+  // Rehydrate auth from localStorage on mount so returning from /convert or
+  // /editor doesn't kick the user back to the login screen.
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage.getItem("hcdx-authed") === "1") {
+        setAuthed(true);
+      }
+    } catch {}
+  }, []);
+
   useEffect(() => {
     if (authed) loadProjects();
   }, [authed]);
@@ -72,6 +82,7 @@ export default function Dashboard() {
     e.preventDefault();
     if (email.trim().toLowerCase() === "admin@hcdx.com" && password === "demo1234") {
       setLoginError("");
+      try { window.localStorage.setItem("hcdx-authed", "1"); } catch {}
       setAuthed(true);
     } else {
       setLoginError("Incorrect email or password.");

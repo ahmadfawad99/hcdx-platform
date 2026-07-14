@@ -180,6 +180,34 @@ function ConvertInner() {
     reader.readAsText(file);
   }
 
+  // Demo-safe path: fetch the HCDX CMC prototype via the backend capture
+  // endpoint (which handles the cross-domain fetch + absolutizes assets),
+  // then hand it straight to the converter. Guarantees a working preview
+  // for demos even if paste/upload has an asset-path issue.
+  async function loadCmcDemo() {
+    setChooser(false);
+    setLeftTab("input");
+    setBaseUrl("https://thehcdx.com/cmc/");
+    setModal({ status: "loading", message: "Loading the CMC demo page…" });
+    try {
+      // Use the same capture endpoint the original URL-capture flow uses.
+      const cap = await fetch("/api/capture", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: "https://thehcdx.com/cmc/" }),
+      });
+      const capData = await cap.json();
+      if (!cap.ok) throw new Error(capData.error || "Capture failed.");
+      // capture stores it as a project; pull the tagged HTML back out.
+      const proj = await (await fetch(`/api/projects?id=${capData.id}`)).json();
+      const demoHtml = proj.draftHtml || "";
+      setHtml(demoHtml);
+      setModal(null);
+      convert(demoHtml);
+    } catch (err) {
+      setModal({ status: "error", message: err.message });
+    }
+  }
+
   // Listen for undo/redo availability from the preview runtime.
   useEffect(() => {
     function onMsg(e) {
@@ -458,6 +486,15 @@ function ConvertInner() {
                 <div style={{ fontSize: 12.5, color: C.muted, marginTop: 4 }}>Choose a .html file — we read and convert it.</div>
               </button>
             </div>
+            <button onClick={loadCmcDemo}
+              style={{ ...chooserCard, marginTop: 14, width: "100%", flexDirection: "row", alignItems: "center", gap: 14, background: "#F1F7F3", border: "1px solid #C6DFCE" }}>
+              <div style={{ fontSize: 24 }}>✨</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 14.5, color: C.navy }}>Load the HCDX CMC demo</div>
+                <div style={{ fontSize: 12.5, color: C.muted, marginTop: 2 }}>Grabs <span style={{ fontFamily: MONO }}>thehcdx.com/cmc/</span> live — guaranteed to render with its real styling.</div>
+              </div>
+              <div style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>DEMO →</div>
+            </button>
             <div style={{ marginTop: 20, textAlign: "center" }}>
               <button onClick={() => router.push("/")} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 13, cursor: "pointer" }}>Cancel</button>
             </div>
