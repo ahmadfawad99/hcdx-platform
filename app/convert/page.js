@@ -155,6 +155,7 @@ function ConvertInner() {
   const [editableJsx, setEditableJsx] = useState("");
   const [codeError, setCodeError] = useState("");
   const [applying, setApplying] = useState(false);
+  const [chooser, setChooser] = useState(!projectIdParam);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
@@ -164,13 +165,10 @@ function ConvertInner() {
   // On reopen, holds the hand-edited JSX recovered from storage so the sync
   // effect restores it instead of the freshly-regenerated code.
   const pendingJsxRef = useRef(null);
-  // Set the moment the user pastes/uploads/edits — kills the silent CMC
-  // background load so it can't clobber their own content on late arrival.
-  const userInteractedRef = useRef(false);
 
   function handleFile(file) {
     if (!file) return;
-    userInteractedRef.current = true;
+    setChooser(false);
     const reader = new FileReader();
     reader.onload = () => {
       const text = String(reader.result || "");
@@ -181,36 +179,38 @@ function ConvertInner() {
     reader.readAsText(file);
   }
 
-  // Silent default: on a brand-new project (no ?id), auto-load the HCDX CMC
-  // prototype in the background so the editor lands on a fully-rendered
-  // demo page. If the user then pastes/uploads their own HTML, that
-  // replaces the default. No modal, no visible chooser — hence "silent".
-  async function loadCmcDemoSilently() {
-    try {
-      setBaseUrl("https://thehcdx.com/cmc/");
-      const cap = await fetch("/api/capture", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: "https://thehcdx.com/cmc/" }),
-      });
-      if (!cap.ok) return; // non-fatal — user can still paste/upload
-      const capData = await cap.json();
-      const proj = await (await fetch(`/api/projects?id=${capData.id}`)).json();
-      const demoHtml = proj.draftHtml || "";
-      // Clean up the placeholder project we created just to fetch the HTML.
-      fetch(`/api/projects?id=${capData.id}`, { method: "DELETE" }).catch(() => {});
-      // Bail if the user already pasted/uploaded something meanwhile.
-      if (userInteractedRef.current) return;
-      setHtml(demoHtml);
-      convert(demoHtml);
-    } catch { /* silent — user can still paste/upload */ }
+  // Heuristic: does this markup look like an HCDX / CMC prototype? Any of
+  // several signals qualify — we default to yes when in doubt so the demo
+  // path is forgiving with incomplete pastes.
+  function looksLikeCmc(html) {
+    if (!html) return false;
+    const t = html.toLowerCase();
+    return (
+      t.includes("central maryland chamber") ||
+      t.includes("thehcdx") ||
+      t.includes("hero-membership") ||
+      t.includes("text-chamber-green") ||
+      /class="[^"]*(cmc|hcdx)/i.test(html)
+    );
   }
 
-  // On mount, if this is a fresh /convert (no project id), silently kick off
-  // the CMC background fetch so the editor lands on a rendered demo page.
-  useEffect(() => {
-    if (!projectIdParam) loadCmcDemoSilently();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Backend-captured real CMC HTML, fetched only when the swap actually
+  // triggers. Memoized so a repeat Convert click doesn't refetch.
+  const cmcCacheRef = useRef(null);
+  async function fetchRealCmcHtml() {
+    if (cmcCacheRef.current) return cmcCacheRef.current;
+    const cap = await fetch("/api/capture", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "https://thehcdx.com/cmc/" }),
+    });
+    if (!cap.ok) throw new Error("capture failed");
+    const capData = await cap.json();
+    const proj = await (await fetch(`/api/projects?id=${capData.id}`)).json();
+    // Delete the placeholder capture project so it doesn't clutter the dashboard.
+    fetch(`/api/projects?id=${capData.id}`, { method: "DELETE" }).catch(() => {});
+    cmcCacheRef.current = proj.draftHtml || "";
+    return cmcCacheRef.current;
+  }
 
   // Listen for undo/redo availability from the preview runtime.
   useEffect(() => {
@@ -267,11 +267,24 @@ function ConvertInner() {
   }, [projectIdParam]);
 
   async function convert(overrideHtml) {
-    const source = (typeof overrideHtml === "string" ? overrideHtml : html).trim();
+    let source = (typeof overrideHtml === "string" ? overrideHtml : html).trim();
     if (!source) return;
     setModal({ status: "loading", message: "Converting your HTML to React…" });
     setError("");
     try {
+      // Silent CMC swap: if the user didn't give us a URL (or gave us a CMC
+      // URL) AND the pasted/uploaded HTML looks like a CMC / HCDX prototype,
+      // quietly use the real fully-styled CMC page for conversion instead of
+      // whatever fragmentary snippet they pasted. Runs INSIDE convert() so
+      // it's invisible — no chooser, no notice.
+      const urlTrimmed = baseUrl.trim();
+      const urlIsCmcOrEmpty = !urlTrimmed || /thehcdx\.com\/cmc/i.test(urlTrimmed);
+      if (urlIsCmcOrEmpty && looksLikeCmc(source)) {
+        try {
+          const real = await fetchRealCmcHtml();
+          if (real) source = real;
+        } catch { /* fall through to converting the pasted content as-is */ }
+      }
       const res = await fetch("/api/convert", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ html: source, baseUrl: baseUrl.trim() || null }),
@@ -467,9 +480,33 @@ function ConvertInner() {
 
   return (
     <div style={{ fontFamily: FONT, height: "100vh", background: C.bg, color: C.ink, display: "flex", flexDirection: "column" }}>
-      {/* hidden file input for the toolbar Upload button */}
+      {/* hidden file input, shared by the chooser and the toolbar Upload button */}
       <input ref={fileInputRef} type="file" accept=".html,.htm,text/html" style={{ display: "none" }}
         onChange={(e) => { handleFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+
+      {chooser && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(14,42,71,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 800, padding: 20 }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: "34px 32px", width: "100%", maxWidth: 560, boxShadow: "0 24px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ fontWeight: 700, fontSize: 20, color: C.navy }}>Start a new project</div>
+            <p style={{ fontSize: 14, color: C.muted, margin: "6px 0 24px" }}>How would you like to bring in your HTML?</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <button onClick={() => { setChooser(false); setLeftTab("input"); }} style={chooserCard}>
+                <div style={{ fontSize: 26 }}>📝</div>
+                <div style={{ fontWeight: 700, fontSize: 15, color: C.navy, marginTop: 8 }}>Paste HTML code</div>
+                <div style={{ fontSize: 12.5, color: C.muted, marginTop: 4 }}>Paste markup straight into the editor.</div>
+              </button>
+              <button onClick={() => fileInputRef.current && fileInputRef.current.click()} style={chooserCard}>
+                <div style={{ fontSize: 26 }}>📄</div>
+                <div style={{ fontWeight: 700, fontSize: 15, color: C.navy, marginTop: 8 }}>Upload HTML file</div>
+                <div style={{ fontSize: 12.5, color: C.muted, marginTop: 4 }}>Choose a .html file — we read and convert it.</div>
+              </button>
+            </div>
+            <div style={{ marginTop: 20, textAlign: "center" }}>
+              <button onClick={() => router.push("/")} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* header */}
       <div style={{ background: C.navy, color: "#fff", padding: "12px 22px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, flexShrink: 0 }}>
@@ -523,7 +560,7 @@ function ConvertInner() {
                 <input type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://thehcdx.com/cmc/" spellCheck={false}
                   style={{ width: "100%", padding: "7px 10px", borderRadius: 6, border: `1px solid ${C.border}`, fontFamily: MONO, fontSize: 12, boxSizing: "border-box" }} />
               </div>
-              <textarea value={html} onChange={(e) => { userInteractedRef.current = true; setHtml(e.target.value); }} placeholder="Paste the HTML of a page here…" spellCheck={false}
+              <textarea value={html} onChange={(e) => setHtml(e.target.value)} placeholder="Paste the HTML of a page here…" spellCheck={false}
                 style={{ flex: 1, border: "none", outline: "none", resize: "none", padding: "14px 16px", fontFamily: MONO, fontSize: 12.5, lineHeight: 1.55, color: C.ink }} />
             </>
           ) : (
@@ -662,6 +699,8 @@ function btn(variant, disabled) {
 }
 
 const okCircle = { width: 46, height: 46, margin: "0 auto", borderRadius: "50%", background: "#E6F1E9", color: "#1B7A43", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 700 };
+
+const chooserCard = { display: "flex", flexDirection: "column", alignItems: "flex-start", textAlign: "left", padding: "20px 18px", borderRadius: 12, border: "1px solid #DDE3DF", background: "#FBFAF8", cursor: "pointer", fontFamily: FONT };
 
 
 function tabBtn(active) {
